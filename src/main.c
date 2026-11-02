@@ -346,19 +346,18 @@ static void write_range(struct resource * res) {
         } else {
             p = pfn_to_page(i >> PAGE_SHIFT);
             v = lime_map_page(p);
-#ifdef copy_mc_to_kernel
-            {
-                unsigned long mc_err;
-                mc_err = copy_mc_to_kernel(vpage, v, PAGE_SIZE);
-                if (mc_err) {
-                    DBG("Hardware memory error at PFN 0x%llx (%lu bytes unreadable)",
-                        (unsigned long long)(i >> PAGE_SHIFT), mc_err);
-                    memset((char *)vpage + PAGE_SIZE - mc_err, 0, mc_err);
-                }
-            }
+
+            long probe_err;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+            probe_err = copy_from_kernel_nofault(vpage, v, PAGE_SIZE);
 #else
-            copy_page(vpage, v);
+            probe_err = probe_kernel_read(vpage, v, PAGE_SIZE);
 #endif
+            if (probe_err) {
+                DBG("Hardware Abort at PFN 0x%llx (MMIO or Cloaked). Zeroing.", 
+                    (unsigned long long)(i >> PAGE_SHIFT));
+                memset(vpage, 0, PAGE_SIZE);
+            }
             lime_unmap_page(v, p);
 
             s = write_vaddr(vpage, is);
