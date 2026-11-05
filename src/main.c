@@ -354,9 +354,22 @@ static void write_range(struct resource * res) {
             probe_err = probe_kernel_read(vpage, v, PAGE_SIZE);
 #endif
             if (probe_err) {
-                DBG("Hardware Abort at PFN 0x%llx (MMIO or Cloaked). Zeroing.", 
+                DBG("Hardware Abort at PFN 0x%llx (MMIO or Cloaked). Trying 8-byte fallback.", 
                     (unsigned long long)(i >> PAGE_SHIFT));
-                memset(vpage, 0, PAGE_SIZE);
+
+                // Attempt to salvage the page 8 bytes (one descriptor) at a time
+                int offset;
+                for (offset = 0; offset < PAGE_SIZE; offset += 8) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+                    probe_err = copy_from_kernel_nofault((char *)vpage + offset, (char *)v + offset, 8);
+#else
+                    probe_err = probe_kernel_read((char *)vpage + offset, (char *)v + offset, 8);
+#endif
+                    // If the 8-byte read fails zero-out 8 bytes
+                    if (probe_err) {
+                        memset((char *)vpage + offset, 0, 8);
+                    }
+                }
             }
             lime_unmap_page(v, p);
 
