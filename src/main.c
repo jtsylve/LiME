@@ -344,33 +344,46 @@ static void write_range(struct resource * res) {
             DBG("Invalid PFN 0x%llx, writing padding", (unsigned long long)(i >> PAGE_SHIFT));
             write_padding(is);
         } else {
+
+#ifndef copy_mc_to_kernel
+            long probe_err;
+#endif
+
             p = pfn_to_page(i >> PAGE_SHIFT);
             v = lime_map_page(p);
 
-            long probe_err;
+#ifdef copy_mc_to_kernel
+            {
+                /*
+                * Use the architecture-provided machine-check-aware copy
+                * implementation when available.
+                */
+                unsigned long mc_err;
+                mc_err = copy_mc_to_kernel(vpage, v, PAGE_SIZE);
+                if (mc_err) {
+                    DBG("Hardware memory error at PFN 0x%llx (%lu bytes unreadable)",
+                        (unsigned long long)(i >> PAGE_SHIFT), mc_err);
+                    memset((char *)vpage + PAGE_SIZE - mc_err, 0, mc_err);
+                }
+            }
+#else
+            /*
+            * Use fault-aware kernel-memory copying on architectures
+            * without an architecture-specific machine-check copy.
+            *
+            * Only supported kernel access faults are recoverable.
+            */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
             probe_err = copy_from_kernel_nofault(vpage, v, PAGE_SIZE);
 #else
             probe_err = probe_kernel_read(vpage, v, PAGE_SIZE);
 #endif
             if (probe_err) {
-                DBG("Hardware Abort at PFN 0x%llx (MMIO or Cloaked). Trying 8-byte fallback.", 
+                DBG("Kernel memory read failed at PFN 0x%llx (error %ld). Zeroing page.",
                     (unsigned long long)(i >> PAGE_SHIFT));
-
-                // Attempt to salvage the page 8 bytes (one descriptor) at a time
-                int offset;
-                for (offset = 0; offset < PAGE_SIZE; offset += 8) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-                    probe_err = copy_from_kernel_nofault((char *)vpage + offset, (char *)v + offset, 8);
-#else
-                    probe_err = probe_kernel_read((char *)vpage + offset, (char *)v + offset, 8);
-#endif
-                    // If the 8-byte read fails zero-out 8 bytes
-                    if (probe_err) {
-                        memset((char *)vpage + offset, 0, 8);
-                    }
-                }
+                memset(vpage, 0, PAGE_SIZE);
             }
+#endif
             lime_unmap_page(v, p);
 
             s = write_vaddr(vpage, is);
