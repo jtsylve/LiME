@@ -344,10 +344,20 @@ static void write_range(struct resource * res) {
             DBG("Invalid PFN 0x%llx, writing padding", (unsigned long long)(i >> PAGE_SHIFT));
             write_padding(is);
         } else {
+
+#ifndef copy_mc_to_kernel
+            long probe_err;
+#endif
+
             p = pfn_to_page(i >> PAGE_SHIFT);
             v = lime_map_page(p);
+
 #ifdef copy_mc_to_kernel
             {
+                /*
+                * Use the architecture-provided machine-check-aware copy
+                * implementation when available.
+                */
                 unsigned long mc_err;
                 mc_err = copy_mc_to_kernel(vpage, v, PAGE_SIZE);
                 if (mc_err) {
@@ -357,7 +367,22 @@ static void write_range(struct resource * res) {
                 }
             }
 #else
-            copy_page(vpage, v);
+            /*
+            * Use fault-aware kernel-memory copying on architectures
+            * without an architecture-specific machine-check copy.
+            *
+            * Only supported kernel access faults are recoverable.
+            */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+            probe_err = copy_from_kernel_nofault(vpage, v, PAGE_SIZE);
+#else
+            probe_err = probe_kernel_read(vpage, v, PAGE_SIZE);
+#endif
+            if (probe_err) {
+                DBG("Kernel memory read failed at PFN 0x%llx (error %ld). Zeroing page.",
+                    (unsigned long long)(i >> PAGE_SHIFT));
+                memset(vpage, 0, PAGE_SIZE);
+            }
 #endif
             lime_unmap_page(v, p);
 
